@@ -42,6 +42,7 @@ class Store:
                     analysis_id TEXT NOT NULL,
                     match_percent INTEGER NOT NULL,
                     gaps_json TEXT NOT NULL,
+                    recommendation_request_json TEXT,
                     job_description TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -79,6 +80,9 @@ class Store:
                 );
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(paths)").fetchall()}
+            if "recommendation_request_json" not in columns:
+                conn.execute("ALTER TABLE paths ADD COLUMN recommendation_request_json TEXT")
 
     def upsert_path(
         self,
@@ -90,6 +94,7 @@ class Store:
         gaps: List[GapInput],
         job_description: str,
         courses: List[Dict[str, object]],
+        recommendation_request: Optional[Dict[str, object]] = None,
     ) -> str:
         pid = path_id_for(user_id, resume_id, analysis_id)
         now = utc_now()
@@ -97,12 +102,16 @@ class Store:
             existing = conn.execute("SELECT id FROM paths WHERE id = ?", (pid,)).fetchone()
             conn.execute(
                 """
-                INSERT INTO paths (id, user_id, resume_id, resume_label, analysis_id, match_percent, gaps_json, job_description, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO paths (
+                    id, user_id, resume_id, resume_label, analysis_id, match_percent,
+                    gaps_json, recommendation_request_json, job_description, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     resume_label = excluded.resume_label,
                     match_percent = excluded.match_percent,
                     gaps_json = excluded.gaps_json,
+                    recommendation_request_json = excluded.recommendation_request_json,
                     job_description = excluded.job_description,
                     updated_at = excluded.updated_at
                 """,
@@ -114,6 +123,7 @@ class Store:
                     analysis_id,
                     match_percent,
                     json.dumps([gap.model_dump() for gap in gaps]),
+                    json.dumps(recommendation_request) if recommendation_request else None,
                     job_description or "",
                     now,
                     now,
@@ -204,6 +214,25 @@ class Store:
                 raise KeyError("Path not found")
             raw_gaps = json.loads(path["gaps_json"] or "[]")
             return [GapInput(**gap) for gap in raw_gaps]
+
+    def path_recommendation_context(
+        self,
+        user_id: str,
+        resume_id: str,
+        analysis_id: str,
+    ) -> tuple[List[GapInput], Optional[Dict[str, object]]]:
+        pid = path_id_for(user_id, resume_id, analysis_id)
+        with self.connect() as conn:
+            path = conn.execute(
+                "SELECT gaps_json, recommendation_request_json FROM paths WHERE id = ? AND user_id = ?",
+                (pid, user_id),
+            ).fetchone()
+            if not path:
+                raise KeyError("Path not found")
+            raw_gaps = json.loads(path["gaps_json"] or "[]")
+            raw_request = path["recommendation_request_json"]
+            recommendation_request = json.loads(raw_request) if raw_request else None
+            return [GapInput(**gap) for gap in raw_gaps], recommendation_request
 
     def complete_course(self, user_id: str, resume_id: str, analysis_id: str, course_id: str) -> ProgressResponse:
         pid = path_id_for(user_id, resume_id, analysis_id)

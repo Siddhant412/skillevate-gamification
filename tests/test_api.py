@@ -34,7 +34,7 @@ def test_sync_and_complete_course(monkeypatch, tmp_path):
     store = Store(str(tmp_path / "api.db"))
     app.dependency_overrides[current_user_id] = lambda: "auth0|user"
     app.dependency_overrides[get_store] = lambda: store
-    monkeypatch.setattr("app.main._fetch_normalized_courses", lambda gaps: _courses())
+    monkeypatch.setattr("app.main._fetch_normalized_courses", lambda gaps, recommendation_request=None: _courses())
     client = TestClient(app)
 
     sync_response = client.post(

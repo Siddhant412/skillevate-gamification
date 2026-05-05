@@ -27,7 +27,7 @@ def get_settings() -> Settings:
     return Settings(
         recommendation_api_url=os.getenv(
             "RECOMMENDATION_API_URL",
-            "http://localhost:8000/api/batch-recommendations",
+            "http://localhost:8001/api/batch-recommendations",
         ),
         database_url=os.getenv("DATABASE_URL", "sqlite:///./skillevate_gamification.db"),
         auth0_domain=os.getenv("AUTH0_DOMAIN", "skillevate.us.auth0.com"),

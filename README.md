@@ -27,6 +27,8 @@ The MFE must send `Authorization: Bearer <Auth0 access token>` for all `/api/gam
 - `POST /api/gamification/courses/{courseId}/complete`
 - `POST /api/gamification/refresh-recommendations`
 
+`POST /api/gamification/sync-analysis` accepts an optional `recommendationRequest` field with the exact body used by the Recommendation MFE for `/api/batch-recommendations`. When present, the backend uses and stores that request instead of rebuilding a recommendation request from gaps only. If omitted, the backend falls back to the gap-based request builder. The local default expects the recommendation service at `http://localhost:8001/api/batch-recommendations`.
+
 ## Minimum MongoDB fields
 
 When moving gamification state into the shared user MongoDB, the minimum document shape should preserve one gamified learning path per user + resume + analysis:

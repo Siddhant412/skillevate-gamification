@@ -1,5 +1,5 @@
-from app.models import GapInput
-from app.recommendations import build_skill_requests, normalize_recommendations
+from app.models import GapInput, RecommendationRequestBody
+from app.recommendations import build_skill_requests, fetch_batch_recommendations, normalize_recommendations
 from app.storage import Store
 
 
@@ -48,6 +48,42 @@ def test_normalize_recommendations_dedupes_and_assigns_xp():
     assert courses[0]["course_id"] == "course-1"
     assert courses[0]["provider_detail"] == "Teacher"
     assert courses[0]["xp"] == 100
+
+
+def test_fetch_batch_recommendations_uses_explicit_request(monkeypatch):
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"results": []}
+
+    def fake_post(url, json, timeout):
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return Response()
+
+    request = RecommendationRequestBody(
+        skills=[{"skill": "graphql", "preferences": ["Backend Developer"]}],
+        max_results=7,
+        language="en",
+    )
+    monkeypatch.setattr("app.recommendations.requests.post", fake_post)
+
+    fetch_batch_recommendations("https://recommend.example/api/batch-recommendations", [], request)
+
+    assert captured == {
+        "url": "https://recommend.example/api/batch-recommendations",
+        "json": {
+            "skills": [{"skill": "graphql", "preferences": ["Backend Developer"]}],
+            "max_results": 7,
+            "language": "en",
+        },
+        "timeout": 20,
+    }
 
 
 def test_completion_awards_xp_once_and_unlocks_next(tmp_path):

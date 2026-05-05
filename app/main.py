@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from functools import lru_cache
 
 import requests
@@ -6,7 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import current_user_id
 from .config import get_settings
-from .models import CompleteCourseRequest, ProgressResponse, RefreshRecommendationsRequest, SyncAnalysisRequest
+from .models import (
+    CompleteCourseRequest,
+    ProgressResponse,
+    RecommendationRequestBody,
+    RefreshRecommendationsRequest,
+    SyncAnalysisRequest,
+)
 from .recommendations import fetch_batch_recommendations, normalize_recommendations
 from .storage import Store
 
@@ -32,9 +40,9 @@ def get_store() -> Store:
     return Store(settings.sqlite_path)
 
 
-def _fetch_normalized_courses(gaps):
+def _fetch_normalized_courses(gaps, recommendation_request: RecommendationRequestBody | None = None):
     try:
-        api_response = fetch_batch_recommendations(settings.recommendation_api_url, gaps)
+        api_response = fetch_batch_recommendations(settings.recommendation_api_url, gaps, recommendation_request)
     except requests.RequestException as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -54,7 +62,7 @@ def sync_analysis(
     user_id: str = Depends(current_user_id),
     store: Store = Depends(get_store),
 ):
-    courses = _fetch_normalized_courses(request.gaps)
+    courses = _fetch_normalized_courses(request.gaps, request.recommendationRequest)
     store.upsert_path(
         user_id=user_id,
         resume_id=request.resumeId,
@@ -64,6 +72,7 @@ def sync_analysis(
         gaps=request.gaps,
         job_description=request.jobDescription or "",
         courses=courses,
+        recommendation_request=request.recommendationRequest.model_dump() if request.recommendationRequest else None,
     )
     return store.progress(user_id, request.resumeId, request.analysisId)
 
@@ -103,10 +112,19 @@ def refresh_recommendations(
     store: Store = Depends(get_store),
 ):
     try:
-        gaps = store.path_gaps(user_id, request.resumeId, request.analysisId)
+        gaps, stored_recommendation_request = store.path_recommendation_context(
+            user_id,
+            request.resumeId,
+            request.analysisId,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gamification path not found") from exc
 
-    courses = _fetch_normalized_courses(gaps)
+    recommendation_request = (
+        RecommendationRequestBody(**stored_recommendation_request)
+        if stored_recommendation_request
+        else None
+    )
+    courses = _fetch_normalized_courses(gaps, recommendation_request)
     store.refresh_courses(user_id, request.resumeId, request.analysisId, courses)
     return store.progress(user_id, request.resumeId, request.analysisId)

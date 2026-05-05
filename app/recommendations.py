@@ -1,8 +1,8 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import requests
 
-from .models import GapInput
+from .models import GapInput, RecommendationRequestBody
 
 
 def build_skill_requests(gaps: List[GapInput]) -> List[Dict[str, object]]:
@@ -22,12 +22,22 @@ def build_skill_requests(gaps: List[GapInput]) -> List[Dict[str, object]]:
     return requests_body
 
 
-def fetch_batch_recommendations(api_url: str, gaps: List[GapInput]) -> Dict[str, object]:
-    body = {
-        "skills": build_skill_requests(gaps),
-        "max_results": 10,
-        "language": "en",
-    }
+def fetch_batch_recommendations(
+    api_url: str,
+    gaps: List[GapInput],
+    recommendation_request: Optional[RecommendationRequestBody] = None,
+) -> Dict[str, object]:
+    body = (
+        recommendation_request.model_dump()
+        if recommendation_request
+        else {
+            "skills": build_skill_requests(gaps),
+            "max_results": 10,
+            "language": "en",
+        }
+    )
+    if not body.get("skills"):
+        return {"results": [], "metadata": {"total_skills": 0}}
     response = requests.post(api_url, json=body, timeout=20)
     response.raise_for_status()
     return response.json()
