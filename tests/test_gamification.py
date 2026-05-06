@@ -125,6 +125,45 @@ def test_completion_awards_xp_once_and_unlocks_next(tmp_path):
     assert after_again.earnedXp == 100
 
 
+def test_upsert_backfills_courses_for_existing_empty_path(tmp_path):
+    store = Store(str(tmp_path / "gamify.db"))
+    gaps = [GapInput(name="GraphQL", priority="High", match="Apollo")]
+    courses = [
+        {
+            "course_id": "a",
+            "title": "A",
+            "url": "https://a.example",
+            "provider": "YouTube",
+            "provider_detail": "A Channel",
+            "description": "A course",
+            "target_skill": "GraphQL",
+            "relevance_score": 0.5,
+            "xp": 100,
+        },
+        {
+            "course_id": "b",
+            "title": "B",
+            "url": "https://b.example",
+            "provider": "GitHub",
+            "provider_detail": "B Org",
+            "description": "B course",
+            "target_skill": "Docker",
+            "relevance_score": 0.4,
+            "xp": 80,
+        },
+    ]
+
+    store.upsert_path("user-1", "resume-1", "Resume v1", "analysis-1", 72, gaps, "", [])
+    empty_progress = store.progress("user-1", "resume-1", "analysis-1")
+    assert empty_progress.courses == []
+
+    store.upsert_path("user-1", "resume-1", "Resume v1", "analysis-1", 72, gaps, "", courses)
+    backfilled_progress = store.progress("user-1", "resume-1", "analysis-1")
+
+    assert [course.courseId for course in backfilled_progress.courses] == ["a", "b"]
+    assert [course.status for course in backfilled_progress.courses] == ["current", "locked"]
+
+
 def test_locked_course_cannot_be_completed(tmp_path):
     store = Store(str(tmp_path / "gamify.db"))
     courses = [

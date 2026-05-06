@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from functools import lru_cache
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Optional
 
 import requests
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -19,11 +20,25 @@ from .recommendations import fetch_batch_recommendations, normalize_recommendati
 from .storage import Store
 
 settings = get_settings()
+_store: Optional[Store] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    global _store
+    _store = Store(settings.mongodb_uri, settings.mongodb_database)
+    try:
+        yield
+    finally:
+        _store.close()
+        _store = None
+
 
 app = FastAPI(
     title="Skillevate Gamification",
     description="Stores XP, course unlock state, and achievements for Skillevate users.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -35,14 +50,19 @@ app.add_middleware(
 )
 
 
-@lru_cache(maxsize=1)
 def get_store() -> Store:
-    return Store(settings.sqlite_path)
+    if _store is None:
+        raise RuntimeError("Store not initialised — MongoDB connection not open")
+    return _store
 
 
-def _fetch_normalized_courses(gaps, recommendation_request: RecommendationRequestBody | None = None):
+def _fetch_normalized_courses(
+    gaps, recommendation_request: Optional[RecommendationRequestBody] = None
+):
     try:
-        api_response = fetch_batch_recommendations(settings.recommendation_api_url, gaps, recommendation_request)
+        api_response = fetch_batch_recommendations(
+            settings.recommendation_api_url, gaps, recommendation_request
+        )
     except requests.RequestException as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -72,7 +92,11 @@ def sync_analysis(
         gaps=request.gaps,
         job_description=request.jobDescription or "",
         courses=courses,
-        recommendation_request=request.recommendationRequest.model_dump() if request.recommendationRequest else None,
+        recommendation_request=(
+            request.recommendationRequest.model_dump()
+            if request.recommendationRequest
+            else None
+        ),
     )
     return store.progress(user_id, request.resumeId, request.analysisId)
 
@@ -87,7 +111,9 @@ def progress(
     try:
         return store.progress(user_id, resumeId, analysisId)
     except KeyError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gamification path not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Gamification path not found"
+        ) from exc
 
 
 @app.post("/api/gamification/courses/{course_id}/complete", response_model=ProgressResponse)
@@ -118,7 +144,9 @@ def refresh_recommendations(
             request.analysisId,
         )
     except KeyError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gamification path not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Gamification path not found"
+        ) from exc
 
     recommendation_request = (
         RecommendationRequestBody(**stored_recommendation_request)

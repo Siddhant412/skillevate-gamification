@@ -1,9 +1,9 @@
 import hashlib
-import json
-import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+
+from pymongo import ASCENDING, MongoClient
+from pymongo.collection import Collection
 
 from .gamification import BASE_XP, NEXT_LEVEL_XP, achievements, compute_level
 from .models import GapInput, ProgressResponse
@@ -18,71 +18,50 @@ def path_id_for(user_id: str, resume_id: str, analysis_id: str) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _build_course_doc(
+    course: Dict[str, object],
+    position: int,
+    status: str,
+    completed_at: Optional[str] = None,
+) -> Dict:
+    return {
+        "course_id": str(course["course_id"]),
+        "title": str(course["title"]),
+        "url": str(course["url"]),
+        "provider": str(course["provider"]),
+        "provider_detail": str(course["provider_detail"]),
+        "description": str(course["description"]),
+        "target_skill": str(course["target_skill"]),
+        "relevance_score": float(course["relevance_score"]),
+        "xp": int(course["xp"]),
+        "position": position,
+        "status": status,
+        "completed_at": completed_at,
+    }
+
+
 class Store:
-    def __init__(self, sqlite_path: str):
-        self.sqlite_path = sqlite_path
-        db_parent = Path(sqlite_path).expanduser().resolve().parent
-        db_parent.mkdir(parents=True, exist_ok=True)
-        self.init_db()
+    def __init__(self, mongodb_uri: str, mongodb_database: str) -> None:
+        if not mongodb_uri:
+            raise RuntimeError("MONGODB_URI is not configured")
+        self._client = MongoClient(mongodb_uri, serverSelectionTimeoutMS=5000)
+        self._client.admin.command("ping")
+        self._paths: Collection = self._client[mongodb_database]["gamification_paths"]
+        self._ensure_indexes()
 
-    def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.sqlite_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _ensure_indexes(self) -> None:
+        self._paths.create_index(
+            [("user_id", ASCENDING), ("resume_id", ASCENDING), ("analysis_id", ASCENDING)],
+            unique=True,
+            name="user_resume_analysis_unique",
+        )
+        self._paths.create_index(
+            [("user_id", ASCENDING), ("updated_at", ASCENDING)],
+            name="user_updated_at",
+        )
 
-    def init_db(self) -> None:
-        with self.connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS paths (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    resume_id TEXT NOT NULL,
-                    resume_label TEXT NOT NULL,
-                    analysis_id TEXT NOT NULL,
-                    match_percent INTEGER NOT NULL,
-                    gaps_json TEXT NOT NULL,
-                    recommendation_request_json TEXT,
-                    job_description TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(user_id, resume_id, analysis_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS courses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    path_id TEXT NOT NULL,
-                    course_id TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    url TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    provider_detail TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    target_skill TEXT NOT NULL,
-                    relevance_score REAL NOT NULL,
-                    xp INTEGER NOT NULL,
-                    position INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    completed_at TEXT,
-                    FOREIGN KEY(path_id) REFERENCES paths(id) ON DELETE CASCADE,
-                    UNIQUE(path_id, course_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS activities (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    path_id TEXT NOT NULL,
-                    course_id TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    xp INTEGER NOT NULL,
-                    completed_at TEXT NOT NULL,
-                    resume_label TEXT NOT NULL,
-                    FOREIGN KEY(path_id) REFERENCES paths(id) ON DELETE CASCADE
-                );
-                """
-            )
-            columns = {row["name"] for row in conn.execute("PRAGMA table_info(paths)").fetchall()}
-            if "recommendation_request_json" not in columns:
-                conn.execute("ALTER TABLE paths ADD COLUMN recommendation_request_json TEXT")
+    def close(self) -> None:
+        self._client.close()
 
     def upsert_path(
         self,
@@ -98,206 +77,171 @@ class Store:
     ) -> str:
         pid = path_id_for(user_id, resume_id, analysis_id)
         now = utc_now()
-        with self.connect() as conn:
-            existing = conn.execute("SELECT id FROM paths WHERE id = ?", (pid,)).fetchone()
-            conn.execute(
-                """
-                INSERT INTO paths (
-                    id, user_id, resume_id, resume_label, analysis_id, match_percent,
-                    gaps_json, recommendation_request_json, job_description, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    resume_label = excluded.resume_label,
-                    match_percent = excluded.match_percent,
-                    gaps_json = excluded.gaps_json,
-                    recommendation_request_json = excluded.recommendation_request_json,
-                    job_description = excluded.job_description,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    pid,
-                    user_id,
-                    resume_id,
-                    resume_label,
-                    analysis_id,
-                    match_percent,
-                    json.dumps([gap.model_dump() for gap in gaps]),
-                    json.dumps(recommendation_request) if recommendation_request else None,
-                    job_description or "",
-                    now,
-                    now,
-                ),
-            )
 
-            if not existing:
-                for index, course in enumerate(courses):
-                    conn.execute(
-                        """
-                        INSERT INTO courses (
-                            path_id, course_id, title, url, provider, provider_detail, description,
-                            target_skill, relevance_score, xp, position, status
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            pid,
-                            course["course_id"],
-                            course["title"],
-                            course["url"],
-                            course["provider"],
-                            course["provider_detail"],
-                            course["description"],
-                            course["target_skill"],
-                            course["relevance_score"],
-                            course["xp"],
-                            index,
-                            "current" if index == 0 else "locked",
-                        ),
-                    )
-            return pid
+        existing = self._paths.find_one({"_id": pid}, {"courses": 1})
+        existing_course_count = len(existing.get("courses", [])) if existing else 0
 
-    def refresh_courses(self, user_id: str, resume_id: str, analysis_id: str, courses: List[Dict[str, object]]) -> str:
+        update: Dict = {
+            "$set": {
+                "user_id": user_id,
+                "resume_id": resume_id,
+                "resume_label": resume_label,
+                "analysis_id": analysis_id,
+                "match_percent": match_percent,
+                "gaps": [gap.model_dump() for gap in gaps],
+                "recommendation_request": recommendation_request,
+                "job_description": job_description or "",
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "created_at": now,
+                "activities": [],
+            },
+        }
+
+        if not existing or existing_course_count == 0:
+            update["$set"]["courses"] = [
+                _build_course_doc(course, index, "current" if index == 0 else "locked")
+                for index, course in enumerate(courses)
+            ]
+
+        self._paths.update_one({"_id": pid}, update, upsert=True)
+        return pid
+
+    def refresh_courses(
+        self, user_id: str, resume_id: str, analysis_id: str, courses: List[Dict[str, object]]
+    ) -> str:
         pid = path_id_for(user_id, resume_id, analysis_id)
-        with self.connect() as conn:
-            path = conn.execute("SELECT id FROM paths WHERE id = ? AND user_id = ?", (pid, user_id)).fetchone()
-            if not path:
-                raise KeyError("Path not found")
-            completed = {
-                row["course_id"]: row["completed_at"]
-                for row in conn.execute("SELECT course_id, completed_at FROM courses WHERE path_id = ? AND status = 'complete'", (pid,))
-            }
-            conn.execute("DELETE FROM courses WHERE path_id = ?", (pid,))
-            first_open_assigned = False
-            for index, course in enumerate(courses):
-                course_id = str(course["course_id"])
-                completed_at = completed.get(course_id)
-                if completed_at:
-                    status = "complete"
-                elif not first_open_assigned:
-                    status = "current"
-                    first_open_assigned = True
-                else:
-                    status = "locked"
-                conn.execute(
-                    """
-                    INSERT INTO courses (
-                        path_id, course_id, title, url, provider, provider_detail, description,
-                        target_skill, relevance_score, xp, position, status, completed_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        pid,
-                        course_id,
-                        course["title"],
-                        course["url"],
-                        course["provider"],
-                        course["provider_detail"],
-                        course["description"],
-                        course["target_skill"],
-                        course["relevance_score"],
-                        course["xp"],
-                        index,
-                        status,
-                        completed_at,
-                    ),
-                )
-            conn.execute("UPDATE paths SET updated_at = ? WHERE id = ?", (utc_now(), pid))
+        doc = self._paths.find_one({"_id": pid, "user_id": user_id}, {"courses": 1})
+        if not doc:
+            raise KeyError("Path not found")
+
+        completed: Dict[str, str] = {
+            c["course_id"]: c["completed_at"]
+            for c in doc.get("courses", [])
+            if c.get("status") == "complete"
+        }
+
+        first_open_assigned = False
+        course_docs = []
+        for index, course in enumerate(courses):
+            course_id = str(course["course_id"])
+            completed_at = completed.get(course_id)
+            if completed_at:
+                status = "complete"
+            elif not first_open_assigned:
+                status = "current"
+                first_open_assigned = True
+            else:
+                status = "locked"
+            course_docs.append(_build_course_doc(course, index, status, completed_at))
+
+        self._paths.update_one(
+            {"_id": pid},
+            {"$set": {"courses": course_docs, "updated_at": utc_now()}},
+        )
         return pid
 
     def path_gaps(self, user_id: str, resume_id: str, analysis_id: str) -> List[GapInput]:
         pid = path_id_for(user_id, resume_id, analysis_id)
-        with self.connect() as conn:
-            path = conn.execute("SELECT gaps_json FROM paths WHERE id = ? AND user_id = ?", (pid, user_id)).fetchone()
-            if not path:
-                raise KeyError("Path not found")
-            raw_gaps = json.loads(path["gaps_json"] or "[]")
-            return [GapInput(**gap) for gap in raw_gaps]
+        doc = self._paths.find_one({"_id": pid, "user_id": user_id}, {"gaps": 1})
+        if not doc:
+            raise KeyError("Path not found")
+        return [GapInput(**gap) for gap in doc.get("gaps", [])]
 
     def path_recommendation_context(
         self,
         user_id: str,
         resume_id: str,
         analysis_id: str,
-    ) -> tuple[List[GapInput], Optional[Dict[str, object]]]:
+    ) -> Tuple[List[GapInput], Optional[Dict[str, object]]]:
         pid = path_id_for(user_id, resume_id, analysis_id)
-        with self.connect() as conn:
-            path = conn.execute(
-                "SELECT gaps_json, recommendation_request_json FROM paths WHERE id = ? AND user_id = ?",
-                (pid, user_id),
-            ).fetchone()
-            if not path:
-                raise KeyError("Path not found")
-            raw_gaps = json.loads(path["gaps_json"] or "[]")
-            raw_request = path["recommendation_request_json"]
-            recommendation_request = json.loads(raw_request) if raw_request else None
-            return [GapInput(**gap) for gap in raw_gaps], recommendation_request
+        doc = self._paths.find_one(
+            {"_id": pid, "user_id": user_id},
+            {"gaps": 1, "recommendation_request": 1},
+        )
+        if not doc:
+            raise KeyError("Path not found")
+        gaps = [GapInput(**gap) for gap in doc.get("gaps", [])]
+        return gaps, doc.get("recommendation_request")
 
-    def complete_course(self, user_id: str, resume_id: str, analysis_id: str, course_id: str) -> ProgressResponse:
+    def complete_course(
+        self, user_id: str, resume_id: str, analysis_id: str, course_id: str
+    ) -> ProgressResponse:
         pid = path_id_for(user_id, resume_id, analysis_id)
         now = utc_now()
-        with self.connect() as conn:
-            path = conn.execute("SELECT * FROM paths WHERE id = ? AND user_id = ?", (pid, user_id)).fetchone()
-            if not path:
-                raise KeyError("Path not found")
-            course = conn.execute(
-                "SELECT * FROM courses WHERE path_id = ? AND course_id = ?",
-                (pid, course_id),
-            ).fetchone()
-            if not course:
-                raise KeyError("Course not found")
-            if course["status"] == "locked":
-                raise PermissionError("Course is locked")
-            if course["status"] != "complete":
-                conn.execute(
-                    "UPDATE courses SET status = 'complete', completed_at = ? WHERE id = ?",
-                    (now, course["id"]),
+
+        doc = self._paths.find_one({"_id": pid, "user_id": user_id})
+        if not doc:
+            raise KeyError("Path not found")
+
+        courses: List[Dict] = doc.get("courses", [])
+        course = next((c for c in courses if c["course_id"] == course_id), None)
+        if not course:
+            raise KeyError("Course not found")
+        if course["status"] == "locked":
+            raise PermissionError("Course is locked")
+
+        if course["status"] != "complete":
+            activity = {
+                "course_id": course["course_id"],
+                "title": course["title"],
+                "xp": course["xp"],
+                "completed_at": now,
+                "resume_label": doc["resume_label"],
+            }
+
+            self._paths.update_one(
+                {"_id": pid, "courses.course_id": course_id},
+                {
+                    "$set": {
+                        "courses.$.status": "complete",
+                        "courses.$.completed_at": now,
+                        "updated_at": now,
+                    },
+                    "$push": {
+                        "activities": {
+                            "$each": [activity],
+                            "$position": 0,
+                            "$slice": 50,
+                        }
+                    },
+                },
+            )
+
+            next_locked = next(
+                (
+                    c for c in sorted(courses, key=lambda x: x["position"])
+                    if c["status"] == "locked"
+                ),
+                None,
+            )
+            if next_locked:
+                self._paths.update_one(
+                    {"_id": pid, "courses.course_id": next_locked["course_id"]},
+                    {"$set": {"courses.$.status": "current"}},
                 )
-                conn.execute(
-                    """
-                    INSERT INTO activities (path_id, course_id, title, xp, completed_at, resume_label)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (pid, course["course_id"], course["title"], course["xp"], now, path["resume_label"]),
-                )
-                next_course = conn.execute(
-                    """
-                    SELECT id FROM courses
-                    WHERE path_id = ? AND status = 'locked'
-                    ORDER BY position ASC
-                    LIMIT 1
-                    """,
-                    (pid,),
-                ).fetchone()
-                if next_course:
-                    conn.execute("UPDATE courses SET status = 'current' WHERE id = ?", (next_course["id"],))
+
         return self.progress(user_id, resume_id, analysis_id)
 
     def progress(self, user_id: str, resume_id: str, analysis_id: str) -> ProgressResponse:
         pid = path_id_for(user_id, resume_id, analysis_id)
-        with self.connect() as conn:
-            path = conn.execute("SELECT * FROM paths WHERE id = ? AND user_id = ?", (pid, user_id)).fetchone()
-            if not path:
-                raise KeyError("Path not found")
-            course_rows = conn.execute(
-                "SELECT * FROM courses WHERE path_id = ? ORDER BY position ASC",
-                (pid,),
-            ).fetchall()
-            activity_rows = conn.execute(
-                "SELECT * FROM activities WHERE path_id = ? ORDER BY completed_at DESC LIMIT 10",
-                (pid,),
-            ).fetchall()
+        doc = self._paths.find_one({"_id": pid, "user_id": user_id})
+        if not doc:
+            raise KeyError("Path not found")
 
-        earned_xp = sum(int(row["xp"]) for row in course_rows if row["status"] == "complete")
+        courses = sorted(doc.get("courses", []), key=lambda c: c["position"])
+        activities = doc.get("activities", [])[:10]  # newest-first via $position:0 on push
+
+        earned_xp = sum(int(c["xp"]) for c in courses if c["status"] == "complete")
         total_xp = BASE_XP + earned_xp
-        completed_count = sum(1 for row in course_rows if row["status"] == "complete")
-        match_percent = int(path["match_percent"])
+        completed_count = sum(1 for c in courses if c["status"] == "complete")
+        match_percent = int(doc["match_percent"])
 
         return ProgressResponse(
             userId=user_id,
-            resumeId=resume_id,
-            resumeLabel=str(path["resume_label"]),
+            resumeId=doc["resume_id"],
+            resumeLabel=str(doc["resume_label"]),
             analysisId=analysis_id,
             matchPercent=match_percent,
             earnedXp=earned_xp,
@@ -307,30 +251,30 @@ class Store:
             nextLevelXp=NEXT_LEVEL_XP,
             courses=[
                 {
-                    "courseId": row["course_id"],
-                    "title": row["title"],
-                    "url": row["url"],
-                    "provider": row["provider"],
-                    "providerDetail": row["provider_detail"],
-                    "description": row["description"],
-                    "targetSkill": row["target_skill"],
-                    "relevanceScore": float(row["relevance_score"]),
-                    "xp": int(row["xp"]),
-                    "position": int(row["position"]),
-                    "status": row["status"],
-                    "completedAt": row["completed_at"],
+                    "courseId": c["course_id"],
+                    "title": c["title"],
+                    "url": c["url"],
+                    "provider": c["provider"],
+                    "providerDetail": c["provider_detail"],
+                    "description": c["description"],
+                    "targetSkill": c["target_skill"],
+                    "relevanceScore": float(c["relevance_score"]),
+                    "xp": int(c["xp"]),
+                    "position": int(c["position"]),
+                    "status": c["status"],
+                    "completedAt": c.get("completed_at"),
                 }
-                for row in course_rows
+                for c in courses
             ],
             achievements=achievements(completed_count, total_xp, match_percent),
             recentActivity=[
                 {
-                    "courseId": row["course_id"],
-                    "title": row["title"],
-                    "xp": int(row["xp"]),
-                    "completedAt": row["completed_at"],
-                    "resumeLabel": row["resume_label"],
+                    "courseId": a["course_id"],
+                    "title": a["title"],
+                    "xp": int(a["xp"]),
+                    "completedAt": a["completed_at"],
+                    "resumeLabel": a["resume_label"],
                 }
-                for row in activity_rows
+                for a in activities
             ],
         )
