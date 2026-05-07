@@ -12,8 +12,6 @@ class Settings:
     recommendation_api_url: str
     mongodb_uri: str
     mongodb_database: str
-    auth0_domain: str
-    auth0_audience: str
     cors_origins: List[str]
 
 
@@ -29,8 +27,6 @@ def get_settings() -> Settings:
         ),
         mongodb_uri=os.getenv("MONGODB_URI", ""),
         mongodb_database=os.getenv("MONGODB_DATABASE", "skillevate_user"),
-        auth0_domain=os.getenv("AUTH0_DOMAIN", "skillevate.us.auth0.com"),
-        auth0_audience=os.getenv("AUTH0_AUDIENCE", ""),
         cors_origins=_split_csv(
             os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:3002")
         ),

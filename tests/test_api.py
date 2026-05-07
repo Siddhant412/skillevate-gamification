@@ -1,7 +1,6 @@
 import mongomock
 from fastapi.testclient import TestClient
 
-from app.auth import current_user_id
 from app.main import app, get_store
 from app.storage import Store
 
@@ -26,18 +25,8 @@ def make_store() -> Store:
     return Store("", "test_db", _client=mongomock.MongoClient())
 
 
-def test_progress_requires_auth():
-    app.dependency_overrides = {}
-    client = TestClient(app)
-
-    response = client.get("/api/gamification/progress?resumeId=r1&analysisId=a1")
-
-    assert response.status_code == 401
-
-
 def test_sync_and_complete_course(monkeypatch):
     store = make_store()
-    app.dependency_overrides[current_user_id] = lambda: "auth0|user"
     app.dependency_overrides[get_store] = lambda: store
     monkeypatch.setattr("app.main._fetch_normalized_courses", lambda gaps, recommendation_request=None: _courses())
     client = TestClient(app)
@@ -45,6 +34,7 @@ def test_sync_and_complete_course(monkeypatch):
     sync_response = client.post(
         "/api/gamification/sync-analysis",
         json={
+            "userId": "user-1",
             "resumeId": "resume-1",
             "resumeLabel": "Resume v1",
             "analysisId": "analysis-1",
@@ -58,7 +48,7 @@ def test_sync_and_complete_course(monkeypatch):
 
     complete_response = client.post(
         "/api/gamification/courses/course-1/complete",
-        json={"resumeId": "resume-1", "analysisId": "analysis-1"},
+        json={"userId": "user-1", "resumeId": "resume-1", "analysisId": "analysis-1"},
     )
     assert complete_response.status_code == 200
     assert complete_response.json()["earnedXp"] == 100
