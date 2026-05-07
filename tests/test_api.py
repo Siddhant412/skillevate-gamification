@@ -1,3 +1,4 @@
+import mongomock
 from fastapi.testclient import TestClient
 
 from app.auth import current_user_id
@@ -21,6 +22,10 @@ def _courses():
     ]
 
 
+def make_store() -> Store:
+    return Store("", "test_db", _client=mongomock.MongoClient())
+
+
 def test_progress_requires_auth():
     app.dependency_overrides = {}
     client = TestClient(app)
@@ -30,8 +35,8 @@ def test_progress_requires_auth():
     assert response.status_code == 401
 
 
-def test_sync_and_complete_course(monkeypatch, tmp_path):
-    store = Store(str(tmp_path / "api.db"))
+def test_sync_and_complete_course(monkeypatch):
+    store = make_store()
     app.dependency_overrides[current_user_id] = lambda: "auth0|user"
     app.dependency_overrides[get_store] = lambda: store
     monkeypatch.setattr("app.main._fetch_normalized_courses", lambda gaps, recommendation_request=None: _courses())

@@ -1,6 +1,12 @@
+import mongomock
+
 from app.models import GapInput, RecommendationRequestBody
 from app.recommendations import build_skill_requests, fetch_batch_recommendations, normalize_recommendations
 from app.storage import Store
+
+
+def make_store() -> Store:
+    return Store("", "test_db", _client=mongomock.MongoClient())
 
 
 def test_build_skill_requests_from_gaps():
@@ -86,8 +92,8 @@ def test_fetch_batch_recommendations_uses_explicit_request(monkeypatch):
     }
 
 
-def test_completion_awards_xp_once_and_unlocks_next(tmp_path):
-    store = Store(str(tmp_path / "gamify.db"))
+def test_completion_awards_xp_once_and_unlocks_next():
+    store = make_store()
     courses = [
         {
             "course_id": "a",
@@ -115,18 +121,18 @@ def test_completion_awards_xp_once_and_unlocks_next(tmp_path):
     store.upsert_path("user-1", "resume-1", "Resume v1", "analysis-1", 72, [GapInput(name="GraphQL")], "", courses)
 
     first = store.progress("user-1", "resume-1", "analysis-1")
-    assert [course.status for course in first.courses] == ["current", "locked"]
+    assert [c.status for c in first.courses] == ["current", "locked"]
 
     after = store.complete_course("user-1", "resume-1", "analysis-1", "a")
     assert after.earnedXp == 100
-    assert [course.status for course in after.courses] == ["complete", "current"]
+    assert [c.status for c in after.courses] == ["complete", "current"]
 
     after_again = store.complete_course("user-1", "resume-1", "analysis-1", "a")
     assert after_again.earnedXp == 100
 
 
-def test_upsert_backfills_courses_for_existing_empty_path(tmp_path):
-    store = Store(str(tmp_path / "gamify.db"))
+def test_upsert_backfills_courses_for_existing_empty_path():
+    store = make_store()
     gaps = [GapInput(name="GraphQL", priority="High", match="Apollo")]
     courses = [
         {
@@ -160,12 +166,12 @@ def test_upsert_backfills_courses_for_existing_empty_path(tmp_path):
     store.upsert_path("user-1", "resume-1", "Resume v1", "analysis-1", 72, gaps, "", courses)
     backfilled_progress = store.progress("user-1", "resume-1", "analysis-1")
 
-    assert [course.courseId for course in backfilled_progress.courses] == ["a", "b"]
-    assert [course.status for course in backfilled_progress.courses] == ["current", "locked"]
+    assert [c.courseId for c in backfilled_progress.courses] == ["a", "b"]
+    assert [c.status for c in backfilled_progress.courses] == ["current", "locked"]
 
 
-def test_locked_course_cannot_be_completed(tmp_path):
-    store = Store(str(tmp_path / "gamify.db"))
+def test_locked_course_cannot_be_completed():
+    store = make_store()
     courses = [
         {
             "course_id": "a",

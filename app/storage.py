@@ -41,11 +41,14 @@ def _build_course_doc(
 
 
 class Store:
-    def __init__(self, mongodb_uri: str, mongodb_database: str) -> None:
-        if not mongodb_uri:
-            raise RuntimeError("MONGODB_URI is not configured")
-        self._client = MongoClient(mongodb_uri, serverSelectionTimeoutMS=5000)
-        self._client.admin.command("ping")
+    def __init__(self, mongodb_uri: str, mongodb_database: str, _client=None) -> None:
+        if _client is not None:
+            self._client = _client
+        else:
+            if not mongodb_uri:
+                raise RuntimeError("MONGODB_URI is not configured")
+            self._client = MongoClient(mongodb_uri, serverSelectionTimeoutMS=5000)
+            self._client.admin.command("ping")
         self._paths: Collection = self._client[mongodb_database]["gamification_paths"]
         self._ensure_indexes()
 
