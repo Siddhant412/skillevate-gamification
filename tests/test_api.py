@@ -28,7 +28,7 @@ def make_store() -> Store:
 def test_sync_and_complete_course(monkeypatch):
     store = make_store()
     app.dependency_overrides[get_store] = lambda: store
-    monkeypatch.setattr("app.main._fetch_normalized_courses", lambda gaps, recommendation_request=None: _courses())
+    monkeypatch.setattr("app.main._fetch_normalized_courses", lambda *_: _courses())
     client = TestClient(app)
 
     sync_response = client.post(

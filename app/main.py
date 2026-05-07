@@ -11,11 +11,10 @@ from .config import get_settings
 from .models import (
     CompleteCourseRequest,
     ProgressResponse,
-    RecommendationRequestBody,
     RefreshRecommendationsRequest,
     SyncAnalysisRequest,
 )
-from .recommendations import fetch_batch_recommendations, normalize_recommendations
+from .recommendations import fetch_user_recommendations, normalize_user_recommendations
 from .storage import Store
 
 settings = get_settings()
@@ -55,19 +54,17 @@ def get_store() -> Store:
     return _store
 
 
-def _fetch_normalized_courses(
-    gaps, recommendation_request: Optional[RecommendationRequestBody] = None
-):
+def _fetch_normalized_courses(user_id: str, analysis_id: str):
     try:
-        api_response = fetch_batch_recommendations(
-            settings.recommendation_api_url, gaps, recommendation_request
+        api_response = fetch_user_recommendations(
+            settings.recommendation_api_url, user_id, analysis_id
         )
     except requests.RequestException as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Recommendation API request failed: {exc}",
         ) from exc
-    return normalize_recommendations(api_response)
+    return normalize_user_recommendations(api_response)
 
 
 @app.get("/health")
@@ -80,7 +77,7 @@ def sync_analysis(
     request: SyncAnalysisRequest,
     store: Store = Depends(get_store),
 ):
-    courses = _fetch_normalized_courses(request.gaps, request.recommendationRequest)
+    courses = _fetch_normalized_courses(request.userId, request.analysisId)
     store.upsert_path(
         user_id=request.userId,
         resume_id=request.resumeId,
@@ -90,11 +87,6 @@ def sync_analysis(
         gaps=request.gaps,
         job_description=request.jobDescription or "",
         courses=courses,
-        recommendation_request=(
-            request.recommendationRequest.model_dump()
-            if request.recommendationRequest
-            else None
-        ),
     )
     return store.progress(request.userId, request.resumeId, request.analysisId)
 
@@ -134,21 +126,12 @@ def refresh_recommendations(
     store: Store = Depends(get_store),
 ):
     try:
-        gaps, stored_recommendation_request = store.path_recommendation_context(
-            request.userId,
-            request.resumeId,
-            request.analysisId,
-        )
+        store.progress(request.userId, request.resumeId, request.analysisId)
     except KeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Gamification path not found"
         ) from exc
 
-    recommendation_request = (
-        RecommendationRequestBody(**stored_recommendation_request)
-        if stored_recommendation_request
-        else None
-    )
-    courses = _fetch_normalized_courses(gaps, recommendation_request)
+    courses = _fetch_normalized_courses(request.userId, request.analysisId)
     store.refresh_courses(request.userId, request.resumeId, request.analysisId, courses)
     return store.progress(request.userId, request.resumeId, request.analysisId)

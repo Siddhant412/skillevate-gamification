@@ -1,7 +1,7 @@
 import mongomock
 
-from app.models import GapInput, RecommendationRequestBody
-from app.recommendations import build_skill_requests, fetch_batch_recommendations, normalize_recommendations
+from app.models import GapInput
+from app.recommendations import fetch_user_recommendations, normalize_user_recommendations
 from app.storage import Store
 
 
@@ -9,54 +9,73 @@ def make_store() -> Store:
     return Store("", "test_db", _client=mongomock.MongoClient())
 
 
-def test_build_skill_requests_from_gaps():
-    gaps = [GapInput(name="GraphQL APIs", priority="High", match="Apollo, Backend")]
-
-    assert build_skill_requests(gaps) == [
-        {
-            "skill": "graphql apis",
-            "preferences": ["priority-high", "Apollo", "Backend"],
-        }
-    ]
-
-
-def test_normalize_recommendations_dedupes_and_assigns_xp():
+def test_normalize_user_recommendations_dedupes_and_assigns_xp():
     response = {
-        "results": [
+        "recommendations": [
             {
-                "skill": "python",
-                "recommendations": [
-                    {
-                        "id": "course-1",
-                        "title": "Python APIs",
-                        "url": "https://example.com",
-                        "provider": "YouTube",
-                        "description": "Build APIs",
-                        "relevance_score": 0.5,
-                        "channel_name": "Teacher",
-                    },
-                    {
-                        "id": "course-1",
-                        "title": "Duplicate",
-                        "url": "https://example.com/2",
-                        "provider": "YouTube",
-                        "description": "",
-                        "relevance_score": 1,
-                    },
-                ],
+                "recommendation_id": "course-1",
+                "title": "GraphQL APIs",
+                "url": "https://example.com",
+                "provider": "YouTube",
+                "description": "Build APIs with GraphQL",
+                "tags": ["graphql"],
+                "relevance_score": 0.5,
+                "status": "recommended",
+                "xp_value": 50,
+                "linked_gap": "GraphQL",
+            },
+            {
+                "recommendation_id": "course-1",
+                "title": "Duplicate",
+                "url": "https://example.com/2",
+                "provider": "YouTube",
+                "description": "",
+                "tags": [],
+                "relevance_score": 0.8,
+                "status": "recommended",
+                "xp_value": 80,
+                "linked_gap": "GraphQL",
+            },
+        ]
+    }
+
+    courses = normalize_user_recommendations(response)
+
+    assert len(courses) == 1
+    assert courses[0]["course_id"] == "course-1"
+    assert courses[0]["target_skill"] == "GraphQL"
+    assert courses[0]["xp"] == 50
+
+
+def test_normalize_user_recommendations_applies_xp_minimum():
+    response = {
+        "recommendations": [
+            {
+                "recommendation_id": "course-low",
+                "title": "Low relevance course",
+                "url": "https://example.com",
+                "provider": "Dev.to",
+                "description": "",
+                "tags": [],
+                "relevance_score": 0.1,
+                "status": "recommended",
+                "xp_value": 10,
+                "linked_gap": "Docker",
             }
         ]
     }
 
-    courses = normalize_recommendations(response)
+    courses = normalize_user_recommendations(response)
 
-    assert len(courses) == 1
-    assert courses[0]["course_id"] == "course-1"
-    assert courses[0]["provider_detail"] == "Teacher"
-    assert courses[0]["xp"] == 100
+    assert courses[0]["xp"] == 40
 
 
-def test_fetch_batch_recommendations_uses_explicit_request(monkeypatch):
+def test_normalize_user_recommendations_empty():
+    assert normalize_user_recommendations({}) == []
+    assert normalize_user_recommendations({"recommendations": []}) == []
+
+
+def test_fetch_user_recommendations_sends_correct_body(monkeypatch):
     captured = {}
 
     class Response:
@@ -64,32 +83,20 @@ def test_fetch_batch_recommendations_uses_explicit_request(monkeypatch):
             return None
 
         def json(self):
-            return {"results": []}
+            return {"recommendations": [], "cached": False}
 
     def fake_post(url, json, timeout):
         captured["url"] = url
         captured["json"] = json
-        captured["timeout"] = timeout
         return Response()
 
-    request = RecommendationRequestBody(
-        skills=[{"skill": "graphql", "preferences": ["Backend Developer"]}],
-        max_results=7,
-        language="en",
-    )
     monkeypatch.setattr("app.recommendations.requests.post", fake_post)
 
-    fetch_batch_recommendations("https://recommend.example/api/batch-recommendations", [], request)
+    fetch_user_recommendations("https://recommend.example/api/user-recommendations", "user-1", "analysis-1")
 
-    assert captured == {
-        "url": "https://recommend.example/api/batch-recommendations",
-        "json": {
-            "skills": [{"skill": "graphql", "preferences": ["Backend Developer"]}],
-            "max_results": 7,
-            "language": "en",
-        },
-        "timeout": 20,
-    }
+    assert captured["url"] == "https://recommend.example/api/user-recommendations"
+    assert captured["json"]["user_id"] == "user-1"
+    assert captured["json"]["analysis_id"] == "analysis-1"
 
 
 def test_completion_awards_xp_once_and_unlocks_next():
@@ -160,41 +167,23 @@ def test_upsert_backfills_courses_for_existing_empty_path():
     ]
 
     store.upsert_path("user-1", "resume-1", "Resume v1", "analysis-1", 72, gaps, "", [])
-    empty_progress = store.progress("user-1", "resume-1", "analysis-1")
-    assert empty_progress.courses == []
+    assert store.progress("user-1", "resume-1", "analysis-1").courses == []
 
     store.upsert_path("user-1", "resume-1", "Resume v1", "analysis-1", 72, gaps, "", courses)
-    backfilled_progress = store.progress("user-1", "resume-1", "analysis-1")
-
-    assert [c.courseId for c in backfilled_progress.courses] == ["a", "b"]
-    assert [c.status for c in backfilled_progress.courses] == ["current", "locked"]
+    backfilled = store.progress("user-1", "resume-1", "analysis-1")
+    assert [c.courseId for c in backfilled.courses] == ["a", "b"]
+    assert [c.status for c in backfilled.courses] == ["current", "locked"]
 
 
 def test_locked_course_cannot_be_completed():
     store = make_store()
     courses = [
-        {
-            "course_id": "a",
-            "title": "A",
-            "url": "",
-            "provider": "YouTube",
-            "provider_detail": "A Channel",
-            "description": "",
-            "target_skill": "GraphQL",
-            "relevance_score": 0.5,
-            "xp": 100,
-        },
-        {
-            "course_id": "b",
-            "title": "B",
-            "url": "",
-            "provider": "GitHub",
-            "provider_detail": "B Org",
-            "description": "",
-            "target_skill": "Docker",
-            "relevance_score": 0.4,
-            "xp": 80,
-        },
+        {"course_id": "a", "title": "A", "url": "", "provider": "YouTube",
+         "provider_detail": "A Channel", "description": "", "target_skill": "GraphQL",
+         "relevance_score": 0.5, "xp": 100},
+        {"course_id": "b", "title": "B", "url": "", "provider": "GitHub",
+         "provider_detail": "B Org", "description": "", "target_skill": "Docker",
+         "relevance_score": 0.4, "xp": 80},
     ]
     store.upsert_path("user-1", "resume-1", "Resume v1", "analysis-1", 72, [GapInput(name="GraphQL")], "", courses)
 

@@ -76,7 +76,6 @@ class Store:
         gaps: List[GapInput],
         job_description: str,
         courses: List[Dict[str, object]],
-        recommendation_request: Optional[Dict[str, object]] = None,
     ) -> str:
         pid = path_id_for(user_id, resume_id, analysis_id)
         now = utc_now()
@@ -92,7 +91,6 @@ class Store:
                 "analysis_id": analysis_id,
                 "match_percent": match_percent,
                 "gaps": [gap.model_dump() for gap in gaps],
-                "recommendation_request": recommendation_request,
                 "job_description": job_description or "",
                 "updated_at": now,
             },

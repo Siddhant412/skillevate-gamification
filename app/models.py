@@ -9,17 +9,6 @@ class GapInput(BaseModel):
     match: str = ""
 
 
-class RecommendationSkillRequest(BaseModel):
-    skill: str
-    preferences: List[str] = Field(default_factory=list)
-
-
-class RecommendationRequestBody(BaseModel):
-    skills: List[RecommendationSkillRequest] = Field(default_factory=list)
-    max_results: int = Field(default=10, ge=1, le=50)
-    language: Optional[str] = "en"
-
-
 class SyncAnalysisRequest(BaseModel):
     userId: str
     resumeId: str
@@ -28,7 +17,6 @@ class SyncAnalysisRequest(BaseModel):
     matchPercent: int = Field(ge=0, le=100)
     gaps: List[GapInput]
     jobDescription: Optional[str] = ""
-    recommendationRequest: Optional[RecommendationRequestBody] = None
 
 
 class RefreshRecommendationsRequest(BaseModel):
