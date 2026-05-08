@@ -1,5 +1,7 @@
 import mongomock
+from datetime import datetime, timedelta, timezone
 
+from app.gamification import compute_streak
 from app.models import GapInput
 from app.recommendations import fetch_user_recommendations, normalize_user_recommendations
 from app.storage import Store
@@ -193,3 +195,32 @@ def test_locked_course_cannot_be_completed():
         pass
     else:
         raise AssertionError("Expected locked course completion to fail")
+
+
+def _activity(days_ago: int) -> dict:
+    dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    return {"course_id": f"c-{days_ago}", "title": "X", "xp": 50, "completed_at": dt.isoformat(), "resume_label": "R"}
+
+
+def test_streak_consecutive_days():
+    activities = [_activity(0), _activity(1), _activity(2)]
+    assert compute_streak(activities) == 3
+
+
+def test_streak_multiple_completions_same_day():
+    activities = [_activity(0), _activity(0), _activity(1)]
+    assert compute_streak(activities) == 2
+
+
+def test_streak_broken_by_gap():
+    activities = [_activity(0), _activity(2)]
+    assert compute_streak(activities) == 1
+
+
+def test_streak_zero_when_last_completion_too_old():
+    activities = [_activity(3), _activity(4)]
+    assert compute_streak(activities) == 0
+
+
+def test_streak_empty():
+    assert compute_streak([]) == 0

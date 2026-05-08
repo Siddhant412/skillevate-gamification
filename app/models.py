@@ -75,3 +75,4 @@ class ProgressResponse(BaseModel):
     courses: List[CourseProgress]
     achievements: List[Achievement]
     recentActivity: List[Activity]
+    currentStreak: int = 0
